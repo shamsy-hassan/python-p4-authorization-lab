@@ -1,108 +1,86 @@
 #!/usr/bin/env python3
 
-from flask import Flask, make_response, jsonify, request, session
+from flask import Flask, request, session, jsonify
 from flask_migrate import Migrate
-from flask_restful import Api, Resource
+from flask_cors import CORS
 
-from models import db, Article, User
+from models import db, User, Article
 
 app = Flask(__name__)
-app.secret_key = b'Y\xf1Xz\x00\xad|eQ\x80t \xca\x1a\x10K'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.json.compact = False
-
-migrate = Migrate(app, db)
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
+app.config['SECRET_KEY'] = 'mysecret'  # for session management
 
 db.init_app(app)
+migrate = Migrate(app, db)
+CORS(app, supports_credentials=True)
 
-api = Api(app)
+# Helper function to check authentication
+def is_authenticated():
+    return 'user_id' in session
 
-class ClearSession(Resource):
+# ============================
+# Routes
+# ============================
 
-    def delete(self):
+@app.route('/clear')
+def clear_session():
+    session.clear()
+    return {}, 204
+
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.json.get('username')
+    user = User.query.filter_by(username=username).first()
+
+    if user:
+        session['user_id'] = user.id
+        return user.to_dict(), 200
+    else:
+        return {'error': 'Unauthorized'}, 401
+
+@app.route('/check_session')
+def check_session():
+    user_id = session.get('user_id')
+    if user_id:
+        user = User.query.get(user_id)
+        return user.to_dict(), 200
+    return {}, 204
+
+@app.route('/logout', methods=['DELETE'])
+def logout():
+    session.clear()
+    return {}, 204
+
+# Public route
+@app.route('/articles')
+def get_articles():
+    articles = Article.query.filter_by(is_member_only=False).all()
+    return jsonify([a.to_dict() for a in articles]), 200
+
+# Member-only index route
+@app.route('/members_only_articles')
+def get_member_only_articles():
+    if not is_authenticated():
+        return {'error': 'Please log in to access member-only content'}, 401
+
+    articles = Article.query.filter_by(is_member_only=True).all()
+    return jsonify([a.to_dict() for a in articles]), 200
+
+# Member-only detail route
+@app.route('/members_only_articles/<int:id>')
+def get_member_only_article(id):
+    if not is_authenticated():
+        return {'error': 'Please log in to access member-only content'}, 401
+
+    article = Article.query.get(id)
+    if not article:
+        return {'error': 'Article not found'}, 404
     
-        session['page_views'] = None
-        session['user_id'] = None
+    return article.to_dict(), 200
 
-        return {}, 204
-
-class IndexArticle(Resource):
-    
-    def get(self):
-        articles = [article.to_dict() for article in Article.query.all()]
-        return make_response(jsonify(articles), 200)
-
-class ShowArticle(Resource):
-
-    def get(self, id):
-
-        article = Article.query.filter(Article.id == id).first()
-        article_json = article.to_dict()
-
-        if not session.get('user_id'):
-            session['page_views'] = 0 if not session.get('page_views') else session.get('page_views')
-            session['page_views'] += 1
-
-            if session['page_views'] <= 3:
-                return article_json, 200
-
-            return {'message': 'Maximum pageview limit reached'}, 401
-
-        return article_json, 200
-
-class Login(Resource):
-
-    def post(self):
-        
-        username = request.get_json().get('username')
-        user = User.query.filter(User.username == username).first()
-
-        if user:
-        
-            session['user_id'] = user.id
-            return user.to_dict(), 200
-
-        return {}, 401
-
-class Logout(Resource):
-
-    def delete(self):
-
-        session['user_id'] = None
-        
-        return {}, 204
-
-class CheckSession(Resource):
-
-    def get(self):
-        
-        user_id = session['user_id']
-        if user_id:
-            user = User.query.filter(User.id == user_id).first()
-            return user.to_dict(), 200
-        
-        return {}, 401
-
-class MemberOnlyIndex(Resource):
-    
-    def get(self):
-        pass
-
-class MemberOnlyArticle(Resource):
-    
-    def get(self, id):
-        pass
-
-api.add_resource(ClearSession, '/clear', endpoint='clear')
-api.add_resource(IndexArticle, '/articles', endpoint='article_list')
-api.add_resource(ShowArticle, '/articles/<int:id>', endpoint='show_article')
-api.add_resource(Login, '/login', endpoint='login')
-api.add_resource(Logout, '/logout', endpoint='logout')
-api.add_resource(CheckSession, '/check_session', endpoint='check_session')
-api.add_resource(MemberOnlyIndex, '/members_only_articles', endpoint='member_index')
-api.add_resource(MemberOnlyArticle, '/members_only_articles/<int:id>', endpoint='member_article')
-
+# ============================
 
 if __name__ == '__main__':
     app.run(port=5555, debug=True)
